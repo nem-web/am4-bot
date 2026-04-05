@@ -8,8 +8,8 @@ const CHAT_ID = process.env.CHAT_ID;
 // ===== SETTINGS =====
 const fuelThreshold = 450;
 const co2Threshold = 115;
-const maxAmount = 200000;
-const cashAlertLimit = 5000000;
+const maxAmount = 1000;
+const cashAlertLimit = 1000000;
 
 // ===== MEMORY (per run) =====
 let lastFuelPrice = null;
