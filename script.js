@@ -51,29 +51,40 @@ function extractLastPrice(text) {
         await sendTelegram("🚀 Bot Started");
 
         // =====================
-        // ✈️ DISPATCH (ONLY LANDED)
+        // ✈️ DISPATCH (REAL FIX)
         // =====================
         await page.goto("https://airlinemanager.com/routes.php", { waitUntil: "networkidle2" });
-
-        const landedAircraft = await page.evaluate(() => {
-            let count = 0;
-
-            document.querySelectorAll("[id^=routesTimer]").forEach(el => {
-                const text = el.innerText.trim();
-
-                if (!text || text === "00:00:00") {
-                    count++;
+        
+        const departed = await page.evaluate(async () => {
+        
+            try {
+                // Call same AJAX as button
+                const res = await fetch(
+                    "https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=",
+                    {
+                        method: "GET",
+                        credentials: "include"
+                    }
+                );
+        
+                const text = await res.text();
+        
+                // if response contains success indicator
+                if (text && text.length > 50) {
+                    return true;
                 }
-            });
-
-            return count;
+        
+                return false;
+        
+            } catch (e) {
+                return false;
+            }
         });
-
-        if (landedAircraft > 0) {
-            await page.goto("https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=");
-            await sendTelegram(`✈️ Departed ${landedAircraft} aircraft`);
+        
+        if (departed) {
+            await sendTelegram("✈️ Aircraft dispatched");
         } else {
-            await sendTelegram("✈️ No aircraft ready for departure");
+            await sendTelegram("⚠️ No aircraft dispatched / already flying");
         }
 
         // =====================
