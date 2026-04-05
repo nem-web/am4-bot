@@ -1,5 +1,8 @@
 {
   "name": "am4-bot",
   "version": "1.0.0",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "puppeteer": "^22.0.0"
+  }
 }
