@@ -145,50 +145,41 @@ async function checkCash() {
 
 // ===== MAIN =====
 async function run() {
+    console.log("=== BOT STARTED ===");
 
-    console.log("Running...");
+    try {
 
-    // ✈️ DISPATCH
-    await departAll();
+        await sendTelegram("🚀 Bot started"); // TEST MESSAGE
 
-    // 💰 CASH CHECK
-    await checkCash();
+        // ✈️ DISPATCH
+        console.log("Checking dispatch...");
+        await departAll();
 
-    // ===== FUEL =====
-    const fuelHTML = await fetchPage(FUEL_URL);
-    const fuelPrice = extractPrice(fuelHTML);
+        // 💰 CASH
+        console.log("Checking cash...");
+        await checkCash();
 
-    if (fuelPrice) {
-        updateHistory(fuelHistory, fuelPrice);
+        // ⛽ FUEL
+        console.log("Checking fuel...");
+        const fuelHTML = await fetchPage(FUEL_URL);
+        console.log("Fuel HTML fetched");
 
-        if (fuelPrice !== lastFuelPrice) {
-            await sendTelegram(`⛽ Fuel Price: $${fuelPrice}`);
-            lastFuelPrice = fuelPrice;
-        }
+        const fuelPrice = extractPrice(fuelHTML);
+        console.log("Fuel price:", fuelPrice);
 
-        if (shouldBuy(fuelPrice, fuelThreshold, fuelHistory)) {
-            await autoBuy("fuel", maxAmount, fuelPrice);
-        }
+        // 🌱 CO2
+        console.log("Checking CO2...");
+        const co2HTML = await fetchPage(CO2_URL);
+
+        const co2Price = extractPrice(co2HTML);
+        console.log("CO2 price:", co2Price);
+
+    } catch (err) {
+        console.log("ERROR:", err);
+        await sendTelegram("❌ BOT ERROR: " + err.message);
     }
 
-    // ===== CO2 =====
-    const co2HTML = await fetchPage(CO2_URL);
-    const co2Price = extractPrice(co2HTML);
-
-    if (co2Price) {
-        updateHistory(co2History, co2Price);
-
-        if (co2Price !== lastCO2Price) {
-            await sendTelegram(`🌱 CO2 Price: $${co2Price}`);
-            lastCO2Price = co2Price;
-        }
-
-        if (shouldBuy(co2Price, co2Threshold, co2History)) {
-            await autoBuy("co2", maxAmount, co2Price);
-        }
-    }
-
-    console.log("Done.");
+    console.log("=== BOT END ===");
 }
 
 run();
