@@ -44,7 +44,7 @@ jobs:
             libgtk-3-0
 
       - name: Run bot
-        run: node script.js
+        run: node testing.js
         env:
           LOGIN_URL: ${{ secrets.LOGIN_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
