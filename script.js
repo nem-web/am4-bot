@@ -1,25 +1,34 @@
 const FUEL_URL = "https://airlinemanager.com/fuel.php?m=nonav";
 const CO2_URL = "https://airlinemanager.com/co2.php";
+const ROUTES_URL = "https://airlinemanager.com/routes.php";
+const BANK_URL = "https://airlinemanager.com/banking.php";
+const DEPART_URL = "https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=";
 
 // ===== CONFIG =====
-const COOKIE = process.env.COOKIE; // stored in GitHub Secrets
+const COOKIE = process.env.COOKIE;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-const fuelThreshold = 410;   // set your value
-const co2Threshold = 110;    // set your value
+// ===== SETTINGS =====
+const fuelThreshold = 450;
+const co2Threshold = 115;
 const maxAmount = 200000;
+// const cashAlertLimit = 5000000;
+const cashAlertLimit = 10000;
 
 // ===== MEMORY =====
 let fuelHistory = [];
 let co2History = [];
+let lastFuelPrice = null;
+let lastCO2Price = null;
 
 // ===== FETCH =====
 async function fetchPage(url) {
     const res = await fetch(url, {
         headers: {
             "Cookie": COOKIE,
-            "User-Agent": "Mozilla/5.0"
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest"
         }
     });
     return await res.text();
@@ -27,6 +36,11 @@ async function fetchPage(url) {
 
 // ===== PARSE =====
 function extractPrice(html) {
+    const match = html.match(/\$\s?([\d,]+)/);
+    return match ? parseInt(match[1].replace(/,/g, "")) : null;
+}
+
+function extractCash(html) {
     const match = html.match(/\$\s?([\d,]+)/);
     return match ? parseInt(match[1].replace(/,/g, "")) : null;
 }
@@ -46,21 +60,6 @@ function shouldBuy(price, threshold, history) {
     return price <= threshold && price <= min + 50;
 }
 
-// ===== BUY =====
-async function autoBuy(type, amount, price) {
-    const url = type === "fuel"
-        ? `https://airlinemanager.com/fuel.php?mode=do&amount=${amount}`
-        : `https://airlinemanager.com/co2.php?mode=do&amount=${amount}`;
-
-    await fetch(url, {
-        headers: { "Cookie": COOKIE }
-    });
-
-    console.log(`${type} bought @ $${price}`);
-
-    await sendTelegram(`✅ ${type.toUpperCase()} BOUGHT\nPrice: $${price}\nAmount: ${amount}`);
-}
-
 // ===== TELEGRAM =====
 async function sendTelegram(msg) {
     if (!TELEGRAM_TOKEN) return;
@@ -75,29 +74,114 @@ async function sendTelegram(msg) {
     });
 }
 
+// ===== COUNT AIRCRAFT =====
+function countAircraft(html) {
+    const matches = html.match(/routeMainList/g);
+    return matches ? matches.length : 0;
+}
+
+// ===== DEPART =====
+async function departAll() {
+    try {
+        const html = await fetchPage(ROUTES_URL);
+        const count = countAircraft(html);
+
+        if (count > 0) {
+            await fetch(DEPART_URL, {
+                method: "GET",
+                headers: {
+                    "Cookie": COOKIE,
+                    "User-Agent": "Mozilla/5.0",
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+            });
+
+            await sendTelegram(`✈️ Departed ${count} aircraft`);
+        }
+
+    } catch {
+        await sendTelegram("❌ Depart failed");
+    }
+}
+
+// ===== BUY =====
+async function autoBuy(type, amount, price) {
+    const url = type === "fuel"
+        ? `https://airlinemanager.com/fuel.php?mode=do&amount=${amount}`
+        : `https://airlinemanager.com/co2.php?mode=do&amount=${amount}`;
+
+    try {
+        await fetch(url, {
+            method: "GET",
+            headers: {
+                "Cookie": COOKIE,
+                "User-Agent": "Mozilla/5.0"
+            }
+        });
+
+        const total = price * amount;
+
+        await sendTelegram(
+`✅ ${type.toUpperCase()} BOUGHT
+Price: $${price}
+Amount: ${amount}
+Total Cost: $${total}`
+        );
+
+    } catch {
+        await sendTelegram(`❌ ${type} buy failed`);
+    }
+}
+
+// ===== CHECK CASH =====
+async function checkCash() {
+    const html = await fetchPage(BANK_URL);
+    const cash = extractCash(html);
+
+    if (cash && cash > cashAlertLimit) {
+        await sendTelegram(`💰 Cash Alert: $${cash}`);
+    }
+}
+
 // ===== MAIN =====
 async function run() {
 
-    console.log("Running check...");
+    console.log("Running...");
 
-    // FUEL
+    // ✈️ DISPATCH
+    await departAll();
+
+    // 💰 CASH CHECK
+    await checkCash();
+
+    // ===== FUEL =====
     const fuelHTML = await fetchPage(FUEL_URL);
     const fuelPrice = extractPrice(fuelHTML);
 
     if (fuelPrice) {
         updateHistory(fuelHistory, fuelPrice);
 
+        if (fuelPrice !== lastFuelPrice) {
+            await sendTelegram(`⛽ Fuel Price: $${fuelPrice}`);
+            lastFuelPrice = fuelPrice;
+        }
+
         if (shouldBuy(fuelPrice, fuelThreshold, fuelHistory)) {
             await autoBuy("fuel", maxAmount, fuelPrice);
         }
     }
 
-    // CO2
+    // ===== CO2 =====
     const co2HTML = await fetchPage(CO2_URL);
     const co2Price = extractPrice(co2HTML);
 
     if (co2Price) {
         updateHistory(co2History, co2Price);
+
+        if (co2Price !== lastCO2Price) {
+            await sendTelegram(`🌱 CO2 Price: $${co2Price}`);
+            lastCO2Price = co2Price;
+        }
 
         if (shouldBuy(co2Price, co2Threshold, co2History)) {
             await autoBuy("co2", maxAmount, co2Price);
