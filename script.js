@@ -27,13 +27,6 @@ async function sendTelegram(msg) {
     });
 }
 
-// ===== PRICE EXTRACT =====
-function extractLastPrice(text) {
-    const matches = text.match(/\$\s?[\d,]+/g);
-    if (!matches) return null;
-    return parseInt(matches.pop().replace(/[$, ]/g, ""));
-}
-
 // ===== MAIN =====
 (async () => {
 
@@ -51,40 +44,51 @@ function extractLastPrice(text) {
         await sendTelegram("🚀 Bot Started");
 
         // =====================
-        // ✈️ DISPATCH (REAL FIX)
+        // ✈️ DISPATCH (FINAL FIX)
         // =====================
-        await page.goto("https://airlinemanager.com/routes.php", { waitUntil: "networkidle2" });
-        
-        const departed = await page.evaluate(async () => {
-        
-            try {
-                // Call same AJAX as button
+        await page.goto(
+            "https://airlinemanager.com/routes_main.php?undefined&fbSig=false",
+            { waitUntil: "networkidle2" }
+        );
+
+        const ids = await page.evaluate(() => {
+            const elements = document.querySelectorAll("[id^=routeMainList]");
+            const ids = [];
+
+            elements.forEach(el => {
+                const match = el.id.match(/\d+/);
+                if (match) ids.push(match[0]);
+            });
+
+            return ids;
+        });
+
+        if (ids.length > 0) {
+
+            const idString = ids.join(",");
+
+            const responseText = await page.evaluate(async (idString) => {
+
                 const res = await fetch(
-                    "https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=",
+                    `https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=${idString}&fbSig=false`,
                     {
                         method: "GET",
                         credentials: "include"
                     }
                 );
-        
-                const text = await res.text();
-        
-                // if response contains success indicator
-                if (text && text.length > 50) {
-                    return true;
-                }
-        
-                return false;
-        
-            } catch (e) {
-                return false;
+
+                return await res.text();
+
+            }, idString);
+
+            if (responseText.includes("playSound('depart')")) {
+                await sendTelegram("✈️ Depart completed");
+            } else {
+                await sendTelegram("⚠️ No aircraft departed");
             }
-        });
-        
-        if (departed) {
-            await sendTelegram("✈️ Aircraft dispatched");
+
         } else {
-            await sendTelegram("⚠️ No aircraft dispatched / already flying");
+            await sendTelegram("⚠️ No aircraft found");
         }
 
         // =====================
