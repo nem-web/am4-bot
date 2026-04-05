@@ -5,16 +5,47 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
+      # ✅ Install Node (important for Puppeteer stability)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # ✅ Install dependencies
       - name: Install dependencies
         run: npm install
 
+      # ✅ Install Chrome dependencies (CRITICAL for Puppeteer)
+      - name: Install Chromium dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libnss3 \
+            libatk-bridge2.0-0 \
+            libatk1.0-0 \
+            libcups2 \
+            libxcomposite1 \
+            libxrandr2 \
+            libgbm1 \
+            libasound2 \
+            libpangocairo-1.0-0 \
+            libxdamage1 \
+            libxfixes3 \
+            libxkbcommon0 \
+            libgtk-3-0
+
+      # ✅ Run bot
       - name: Run bot
         run: node script.js
         env:
