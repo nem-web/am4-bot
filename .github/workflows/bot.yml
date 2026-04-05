@@ -5,25 +5,19 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
+      - name: Install dependencies
+        run: npm install
 
-      - name: Run Bot
+      - name: Run bot
         run: node script.js
         env:
-          COOKIE: ${{ secrets.COOKIE }}
+          LOGIN_URL: ${{ secrets.LOGIN_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
