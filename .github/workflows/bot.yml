@@ -2,8 +2,11 @@ name: AM4 Bot
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 minutes
+    - cron: "*/15 * * * *"
   workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-bot:
@@ -16,9 +19,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: Run Script
+      - name: Run Bot
         run: node script.js
         env:
           COOKIE: ${{ secrets.COOKIE }}
