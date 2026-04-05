@@ -6,9 +6,9 @@ const COOKIE = process.env.COOKIE; // stored in GitHub Secrets
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-const fuelThreshold = 900;   // set your value
-const co2Threshold = 120;    // set your value
-const maxAmount = 50000;
+const fuelThreshold = 410;   // set your value
+const co2Threshold = 110;    // set your value
+const maxAmount = 200000;
 
 // ===== MEMORY =====
 let fuelHistory = [];
