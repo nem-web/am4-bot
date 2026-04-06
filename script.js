@@ -1,4 +1,5 @@
 import puppeteer from "puppeteer";
+import fs from "fs";
 
 // ===== CONFIG =====
 const LOGIN_URL = process.env.LOGIN_URL;
@@ -9,175 +10,238 @@ const CHAT_ID = process.env.CHAT_ID;
 const fuelThreshold = 450;
 const co2Threshold = 115;
 const maxAmount = 200000;
-const cashAlertLimit = 5000000;
+const REPORT_INTERVAL = 60 * 60 * 1000; // 1 hour
 
-// ===== MEMORY =====
-let lastFuelPrice = null;
-let lastCO2Price = null;
+const FILE = "memory.json";
 
 // ===== TELEGRAM =====
 async function sendTelegram(msg) {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            chat_id: CHAT_ID,
-            text: msg
-        })
+        body: JSON.stringify({ chat_id: CHAT_ID, text: msg })
     });
 }
 
-// ===== MAIN =====
+// ===== MEMORY =====
+function load() {
+    if (!fs.existsSync(FILE)) return {};
+    return JSON.parse(fs.readFileSync(FILE));
+}
+
+function save(data) {
+    fs.writeFileSync(FILE, JSON.stringify(data));
+}
+
+// ===== TIME FORMAT =====
+function formatTime(sec) {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return `${h}h ${m}m`;
+}
+
 (async () => {
 
     const browser = await puppeteer.launch({
         headless: "new",
-        args: ["--no-sandbox", "--disable-setuid-sandbox"]
+        args: ["--no-sandbox"]
     });
 
     const page = await browser.newPage();
+    const memory = load();
+    const now = Date.now();
 
     try {
 
-        // ===== LOGIN =====
         await page.goto(LOGIN_URL, { waitUntil: "networkidle2" });
-        await sendTelegram("🚀 Bot Started");
 
         // =====================
-        // ✈️ DISPATCH (FINAL FIX)
+        // ✈️ DEPART
         // =====================
-        await page.goto(
-            "https://airlinemanager.com/routes_main.php?undefined&fbSig=false",
-            { waitUntil: "networkidle2" }
-        );
+        await page.goto("https://airlinemanager.com/routes_main.php?undefined&fbSig=false");
 
         const ids = await page.evaluate(() => {
-            const elements = document.querySelectorAll("[id^=routeMainList]");
-            const ids = [];
-
-            elements.forEach(el => {
-                const match = el.id.match(/\d+/);
-                if (match) ids.push(match[0]);
-            });
-
-            return ids;
+            return [...document.querySelectorAll("[id^=routeMainList]")]
+                .map(el => el.id.match(/\d+/)?.[0])
+                .filter(Boolean);
         });
 
         if (ids.length > 0) {
-
             const idString = ids.join(",");
 
-            const responseText = await page.evaluate(async (idString) => {
-
-                const res = await fetch(
+            const res = await page.evaluate(async (idString) => {
+                const r = await fetch(
                     `https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=${idString}&fbSig=false`,
-                    {
-                        method: "GET",
-                        credentials: "include"
-                    }
+                    { credentials: "include" }
                 );
-
-                return await res.text();
-
+                return await r.text();
             }, idString);
 
-            if (responseText.includes("playSound('depart')")) {
+            if (res.includes("playSound('depart')")) {
                 await sendTelegram("✈️ Depart completed");
-            } else {
-                await sendTelegram("⚠️ No aircraft departed");
             }
-
-        } else {
-            await sendTelegram("⚠️ No aircraft found");
         }
 
         // =====================
-        // 💰 CASH CHECK
+        // 💰 BANK (for profit)
         // =====================
-        await page.goto("https://airlinemanager.com/banking.php", { waitUntil: "networkidle2" });
+        await page.goto("https://airlinemanager.com/banking.php");
 
         const cash = await page.evaluate(() => {
-            const match = document.body.innerText.match(/\$\s?([\d,]+)/);
-            return match ? parseInt(match[1].replace(/,/g, "")) : null;
+            const m = document.body.innerText.match(/\$\s?([\d,]+)/);
+            return m ? parseInt(m[1].replace(/,/g, "")) : 0;
         });
 
-        if (cash && cash > cashAlertLimit) {
-            await sendTelegram(`💰 Cash Alert: $${cash}`);
+        let profitPerHour = 0;
+
+        if (memory.cash && memory.time) {
+            const diffCash = cash - memory.cash;
+            const diffTime = (now - memory.time) / 3600000;
+            if (diffTime > 0) profitPerHour = Math.floor(diffCash / diffTime);
         }
 
         // =====================
         // ⛽ FUEL
         // =====================
-        await page.goto("https://airlinemanager.com/fuel.php", { waitUntil: "networkidle2" });
+        await page.goto("https://airlinemanager.com/fuel.php");
 
         const fuelPrice = await page.evaluate(() => {
-            const text = document.body.innerText;
-            const matches = text.match(/\$\s?[\d,]+/g);
-            if (!matches) return null;
-            return parseInt(matches.pop().replace(/[$, ]/g, ""));
+            const m = document.body.innerText.match(/\$\s?([\d,]+)/g);
+            return m ? parseInt(m.pop().replace(/[$,]/g, "")) : null;
         });
 
-        if (fuelPrice !== null) {
+        if (fuelPrice && fuelPrice <= fuelThreshold) {
+            await page.goto(`https://airlinemanager.com/fuel.php?mode=do&amount=${maxAmount}`);
 
-            if (fuelPrice !== lastFuelPrice) {
-                await sendTelegram(`⛽ Fuel Price (per 1000): $${fuelPrice}`);
-                lastFuelPrice = fuelPrice;
-            }
+            const total = (fuelPrice * maxAmount) / 1000;
 
-            if (fuelPrice <= fuelThreshold) {
-
-                await page.goto(`https://airlinemanager.com/fuel.php?mode=do&amount=${maxAmount}`);
-
-                const totalCost = (fuelPrice * maxAmount) / 1000;
-
-                await sendTelegram(
-`✅ FUEL BOUGHT
-Price (per 1000): $${fuelPrice}
+            await sendTelegram(
+`⛽ FUEL BOUGHT
+Price: $${fuelPrice}/1000
 Amount: ${maxAmount}
-Total Cost: $${totalCost}`
-                );
-            }
-
-        } else {
-            await sendTelegram("❌ Fuel price not detected");
+Total: $${total}`
+            );
         }
 
         // =====================
         // 🌱 CO2
         // =====================
-        await page.goto("https://airlinemanager.com/co2.php", { waitUntil: "networkidle2" });
+        await page.goto("https://airlinemanager.com/co2.php");
 
         const co2Price = await page.evaluate(() => {
-            const text = document.body.innerText;
-            const matches = text.match(/\$\s?[\d,]+/g);
-            if (!matches) return null;
-            return parseInt(matches.pop().replace(/[$, ]/g, ""));
+            const m = document.body.innerText.match(/\$\s?([\d,]+)/g);
+            return m ? parseInt(m.pop().replace(/[$,]/g, "")) : null;
         });
 
-        if (co2Price !== null) {
+        if (co2Price && co2Price <= co2Threshold) {
+            await page.goto(`https://airlinemanager.com/co2.php?mode=do&amount=${maxAmount}`);
 
-            if (co2Price !== lastCO2Price) {
-                await sendTelegram(`🌱 CO2 Price (per 1000): $${co2Price}`);
-                lastCO2Price = co2Price;
-            }
+            const total = (co2Price * maxAmount) / 1000;
 
-            if (co2Price <= co2Threshold) {
-
-                await page.goto(`https://airlinemanager.com/co2.php?mode=do&amount=${maxAmount}`);
-
-                const totalCost = (co2Price * maxAmount) / 1000;
-
-                await sendTelegram(
-`✅ CO2 BOUGHT
-Price (per 1000): $${co2Price}
+            await sendTelegram(
+`🌱 CO2 BOUGHT
+Price: $${co2Price}/1000
 Amount: ${maxAmount}
-Total Cost: $${totalCost}`
-                );
+Total: $${total}`
+            );
+        }
+
+        // =====================
+        // 📊 MARKETING (BOOST FIX)
+        // =====================
+        await page.goto("https://airlinemanager.com/marketing.php");
+
+        const marketing = await page.evaluate(() => {
+
+            const stars = document.querySelectorAll(".stars");
+
+            const airlineRep = parseInt(stars[0]?.innerText || 0);
+            const cargoRep = parseInt(stars[1]?.innerText || 0);
+
+            const scripts = [...document.querySelectorAll("script")].map(s => s.innerText);
+
+            let boosts = [];
+
+            scripts.forEach(s => {
+
+                const match = s.match(/timer\('(.+?)',(\d+)\)/);
+
+                if (match) {
+                    const id = match[1];
+                    const seconds = parseInt(match[2]);
+
+                    const row = document.querySelector(`#${id}`)?.closest("tr");
+                    const text = row?.innerText.toLowerCase() || "";
+
+                    if (text.includes("airline")) {
+                        boosts.push({ type: "Airline", seconds });
+                    }
+
+                    if (text.includes("cargo")) {
+                        boosts.push({ type: "Cargo", seconds });
+                    }
+                }
+
+            });
+
+            return { airlineRep, cargoRep, boosts };
+        });
+
+        // =====================
+        // 📊 REPORT CONTROL
+        // =====================
+        const shouldSend =
+            !marketing.boosts.length ||
+            !memory.lastReport ||
+            (now - memory.lastReport > REPORT_INTERVAL);
+
+        if (shouldSend) {
+
+            let msg = `📊 AM4 ADVANCED REPORT\n\n`;
+            msg += `✈️ Airline Rep: ${marketing.airlineRep}%\n`;
+            msg += `📦 Cargo Rep: ${marketing.cargoRep}%\n\n`;
+
+            if (marketing.boosts.length > 0) {
+                marketing.boosts.forEach(b => {
+                    msg += `🚀 ${b.type} Boost (${formatTime(b.seconds)})\n`;
+                });
+            } else {
+                msg += `⚠️ No Boost Active\n`;
             }
 
-        } else {
-            await sendTelegram("❌ CO2 price not detected");
+            if (profitPerHour > 0) {
+                msg += `\n💰 Profit/hr: $${profitPerHour.toLocaleString()}\n`;
+            }
+
+            msg += `\n📊 Strategy:\n`;
+
+            if (!marketing.boosts.find(b => b.type === "Cargo")) {
+                msg += "👉 Start Cargo Boost\n";
+            }
+
+            if (!marketing.boosts.find(b => b.type === "Airline")) {
+                msg += "👉 Start Airline Boost\n";
+            }
+
+            if (marketing.cargoRep < 60) {
+                msg += "👉 Run Cargo Campaign\n";
+            }
+
+            if (marketing.airlineRep < 60) {
+                msg += "👉 Run Airline Campaign\n";
+            }
+
+            if (profitPerHour < 1000000) {
+                msg += "👉 Improve routes\n";
+            }
+
+            await sendTelegram(msg);
+
+            memory.lastReport = now;
         }
+
+        // SAVE MEMORY
+        save({ cash, time: now, lastReport: memory.lastReport });
 
     } catch (err) {
         console.log(err);
