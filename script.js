@@ -9,11 +9,10 @@ const CHAT_ID = process.env.CHAT_ID;
 // ===== SETTINGS =====
 const fuelThreshold = 450;
 const co2Threshold = 125;
-const maxAmount = 2000;
 // const maxAmount = 200000;
+const maxAmount = 2000;
 
 const BOOST_INTERVAL = 60 * 60 * 1000;
-
 const FILE = "memory.json";
 
 // ===== TELEGRAM =====
@@ -39,6 +38,45 @@ function formatTime(sec) {
     const h = Math.floor(sec / 3600);
     const m = Math.floor((sec % 3600) / 60);
     return `${h}h ${m}m`;
+}
+
+// ===== FETCH CASH =====
+async function getCash(page) {
+    await page.goto("https://airlinemanager.com/banking.php");
+    return await page.evaluate(() => {
+        const m = document.body.innerText.match(/\$\s?([\d,]+)/);
+        return m ? parseInt(m[1].replace(/,/g, "")) : 0;
+    });
+}
+
+// ===== BUY FUNCTION (RELIABLE) =====
+async function buy(page, type, price, amount) {
+
+    const before = await getCash(page);
+
+    await page.evaluate(async (type, amount) => {
+        await fetch(`https://airlinemanager.com/${type}.php?mode=do&amount=${amount}`, {
+            credentials: "include"
+        });
+    }, type, amount);
+
+    await new Promise(r => setTimeout(r, 3000));
+
+    const after = await getCash(page);
+
+    if (after < before) {
+        const total = (price * amount) / 1000;
+
+        await sendTelegram(
+`✅ ${type.toUpperCase()} BOUGHT
+Price: $${price}/1000
+Amount: ${amount}
+Total: $${total}`
+        );
+        return true;
+    }
+
+    return false;
 }
 
 (async () => {
@@ -84,15 +122,9 @@ function formatTime(sec) {
         // =====================
         // 💰 CASH + PROFIT
         // =====================
-        await page.goto("https://airlinemanager.com/banking.php");
-
-        const cash = await page.evaluate(() => {
-            const m = document.body.innerText.match(/\$\s?([\d,]+)/);
-            return m ? parseInt(m[1].replace(/,/g, "")) : 0;
-        });
+        const cash = await getCash(page);
 
         let profitPerHour = 0;
-
         if (memory.cash && memory.time) {
             const diffCash = cash - memory.cash;
             const diffTime = (now - memory.time) / 3600000;
@@ -115,25 +147,19 @@ function formatTime(sec) {
 
         if (fuelPrice !== null) {
 
-            // price change alert
             if (memory.lastFuel !== fuelPrice) {
                 await sendTelegram(`⛽ Fuel Price: $${fuelPrice}/1000`);
                 memory.lastFuel = fuelPrice;
             }
 
-            // autobuy
             if (fuelPrice <= fuelThreshold) {
 
-                await page.goto(`https://airlinemanager.com/fuel.php?mode=do&amount=${maxAmount}`);
+                let success = await buy(page, "fuel", fuelPrice, maxAmount);
 
-                const total = (fuelPrice * maxAmount) / 1000;
-
-                await sendTelegram(
-`✅ FUEL BOUGHT
-Price: $${fuelPrice}/1000
-Amount: ${maxAmount}
-Total: $${total}`
-                );
+                if (!success) {
+                    await sendTelegram("⚠️ Fuel retry...");
+                    await buy(page, "fuel", fuelPrice, maxAmount);
+                }
             }
         }
 
@@ -156,16 +182,12 @@ Total: $${total}`
 
             if (co2Price <= co2Threshold) {
 
-                await page.goto(`https://airlinemanager.com/co2.php?mode=do&amount=${maxAmount}`);
+                let success = await buy(page, "co2", co2Price, maxAmount);
 
-                const total = (co2Price * maxAmount) / 1000;
-
-                await sendTelegram(
-`✅ CO2 BOUGHT
-Price: $${co2Price}/1000
-Amount: ${maxAmount}
-Total: $${total}`
-                );
+                if (!success) {
+                    await sendTelegram("⚠️ CO2 retry...");
+                    await buy(page, "co2", co2Price, maxAmount);
+                }
             }
         }
 
