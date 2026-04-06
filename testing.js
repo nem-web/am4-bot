@@ -1,8 +1,11 @@
 import puppeteer from "puppeteer";
+import fs from "fs";
 
 const LOGIN_URL = process.env.LOGIN_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
+
+const FILE = "profit.json";
 
 // ===== TELEGRAM =====
 async function sendTelegram(msg) {
@@ -16,6 +19,16 @@ async function sendTelegram(msg) {
     });
 }
 
+// ===== LOAD / SAVE =====
+function load() {
+    if (!fs.existsSync(FILE)) return null;
+    return JSON.parse(fs.readFileSync(FILE));
+}
+
+function save(data) {
+    fs.writeFileSync(FILE, JSON.stringify(data));
+}
+
 (async () => {
 
     const browser = await puppeteer.launch({
@@ -25,75 +38,124 @@ async function sendTelegram(msg) {
 
     const page = await browser.newPage();
 
-    // LOGIN (using your account URL)
     await page.goto(LOGIN_URL, { waitUntil: "networkidle2" });
 
-    // OPEN MARKETING PAGE
+    // ===== MARKETING PAGE =====
     await page.goto("https://airlinemanager.com/marketing.php", {
         waitUntil: "networkidle2"
     });
 
     await page.waitForSelector(".stars");
 
-    // ===== EXTRACT DATA =====
-    const data = await page.evaluate(() => {
+    const marketing = await page.evaluate(() => {
 
         const stars = document.querySelectorAll(".stars");
 
-        const airlineRep = stars[0]?.innerText.trim();
-        const cargoRep = stars[1]?.innerText.trim();
+        const airlineRep = parseInt(stars[0]?.innerText.trim());
+        const cargoRep = parseInt(stars[1]?.innerText.trim());
 
-        // ===== BOOST TIMER =====
-        let boostActive = false;
-        let boostText = "Not active";
+        // ===== BOOST DETECTION =====
+        const rows = document.querySelectorAll("#active-campaigns tr");
 
-        const timer = document.querySelector("[id*='timer']");
+        let boosts = [];
 
-        if (timer) {
-            boostActive = true;
-            boostText = timer.innerText.trim();
-        }
+        rows.forEach(row => {
+            const text = row.innerText.toLowerCase();
 
-        return {
-            airlineRep,
-            cargoRep,
-            boostActive,
-            boostText
-        };
+            const timerEl = row.querySelector("[id*='timer']");
+            const time = timerEl ? timerEl.innerText.trim() : "";
+
+            if (text.includes("airline video boost")) {
+                boosts.push({
+                    type: "Airline",
+                    time
+                });
+            }
+
+            if (text.includes("cargo video boost")) {
+                boosts.push({
+                    type: "Cargo",
+                    time
+                });
+            }
+        });
+
+        return { airlineRep, cargoRep, boosts };
     });
 
-    // ===== TELEGRAM REPORT =====
-    let msg = `📊 AM4 STATUS\n\n`;
-    msg += `✈️ Airline Reputation: ${data.airlineRep}%\n`;
-    msg += `📦 Cargo Reputation: ${data.cargoRep}%\n\n`;
+    // ===== BANK PAGE (for profit) =====
+    await page.goto("https://airlinemanager.com/banking.php", {
+        waitUntil: "networkidle2"
+    });
 
-    if (data.boostActive) {
-        msg += `🚀 Boost Active\n⏱ ${data.boostText}\n`;
+    const cash = await page.evaluate(() => {
+        const text = document.body.innerText;
+        const match = text.match(/\$\s?([\d,]+)/);
+        return match ? parseInt(match[1].replace(/,/g, "")) : 0;
+    });
+
+    // ===== PROFIT TRACKING =====
+    const now = Date.now();
+    let profitPerHour = 0;
+
+    const old = load();
+
+    if (old) {
+        const diffCash = cash - old.cash;
+        const diffTime = (now - old.time) / (1000 * 60 * 60);
+
+        if (diffTime > 0) {
+            profitPerHour = Math.floor(diffCash / diffTime);
+        }
+    }
+
+    save({ cash, time: now });
+
+    // ===== MESSAGE =====
+    let msg = `📊 AM4 ADVANCED REPORT\n\n`;
+
+    msg += `✈️ Airline Rep: ${marketing.airlineRep}%\n`;
+    msg += `📦 Cargo Rep: ${marketing.cargoRep}%\n\n`;
+
+    // ===== BOOST DISPLAY =====
+    if (marketing.boosts.length > 0) {
+        marketing.boosts.forEach(b => {
+            msg += `🚀 ${b.type} Boost Active (${b.time})\n`;
+        });
     } else {
         msg += `⚠️ No Boost Active\n`;
     }
 
-    // ===== OPTIMIZATION LOGIC =====
-    let advice = "";
-
-    if (!data.boostActive) {
-        advice += "👉 Activate cargo boost NOW\n";
+    // ===== PROFIT =====
+    if (profitPerHour !== 0) {
+        msg += `\n💰 Profit/hr: $${profitPerHour.toLocaleString()}\n`;
     }
 
-    if (parseInt(data.cargoRep) < 60) {
-        advice += "👉 Run cargo campaigns (type=2)\n";
+    // ===== SMART ADVICE =====
+    msg += `\n📊 Strategy:\n`;
+
+    if (!marketing.boosts.find(b => b.type === "Cargo")) {
+        msg += "👉 Start Cargo Boost\n";
     }
 
-    if (parseInt(data.airlineRep) < 60) {
-        advice += "👉 Run airline campaigns (type=1)\n";
+    if (!marketing.boosts.find(b => b.type === "Airline")) {
+        msg += "👉 Start Airline Boost\n";
     }
 
-    if (data.boostActive && parseInt(data.cargoRep) > 70) {
-        advice += "🔥 BEST TIME: Run cargo-heavy routes\n";
+    if (marketing.cargoRep < 60) {
+        msg += "👉 Run Cargo Campaign\n";
     }
 
-    if (advice) {
-        msg += `\n📊 Optimization:\n${advice}`;
+    if (marketing.airlineRep < 60) {
+        msg += "👉 Run Airline Campaign\n";
+    }
+
+    if (profitPerHour < 1000000) {
+        msg += "👉 Improve routes / utilization\n";
+    }
+
+    if (marketing.boosts.length > 0 && marketing.cargoRep > 70) {
+        msg += "🔥 BEST TIME: Run cargo flights\n";
     }
 
     await sendTelegram(msg);
