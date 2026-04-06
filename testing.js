@@ -1,14 +1,11 @@
 import puppeteer from "puppeteer";
 
-// ===== CONFIG =====
 const LOGIN_URL = process.env.LOGIN_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
 // ===== TELEGRAM =====
 async function sendTelegram(msg) {
-    if (!TELEGRAM_TOKEN) return;
-
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -19,94 +16,87 @@ async function sendTelegram(msg) {
     });
 }
 
-// ===== MAIN =====
 (async () => {
 
     const browser = await puppeteer.launch({
         headless: "new",
-        args: ["--no-sandbox", "--disable-setuid-sandbox"]
+        args: ["--no-sandbox"]
     });
 
     const page = await browser.newPage();
 
-    try {
+    // LOGIN (using your account URL)
+    await page.goto(LOGIN_URL, { waitUntil: "networkidle2" });
 
-        console.log("🚀 Opening game...");
-        await page.goto(LOGIN_URL, { waitUntil: "networkidle2" });
+    // OPEN MARKETING PAGE
+    await page.goto("https://airlinemanager.com/marketing.php", {
+        waitUntil: "networkidle2"
+    });
 
-        await sendTelegram("🧪 TEST: Dispatch started");
+    await page.waitForSelector(".stars");
 
-        // =====================
-        // STEP 1: LOAD ROUTES
-        // =====================
-        console.log("Loading routes...");
-        await page.goto(
-            "https://airlinemanager.com/routes_main.php?undefined&fbSig=false",
-            { waitUntil: "networkidle2" }
-        );
+    // ===== EXTRACT DATA =====
+    const data = await page.evaluate(() => {
 
-        // =====================
-        // STEP 2: EXTRACT IDS
-        // =====================
-        const ids = await page.evaluate(() => {
-            const elements = document.querySelectorAll("[id^=routeMainList]");
-            const ids = [];
+        const stars = document.querySelectorAll(".stars");
 
-            elements.forEach(el => {
-                const match = el.id.match(/\d+/);
-                if (match) ids.push(match[0]);
-            });
+        const airlineRep = stars[0]?.innerText.trim();
+        const cargoRep = stars[1]?.innerText.trim();
 
-            return ids;
-        });
+        // ===== BOOST TIMER =====
+        let boostActive = false;
+        let boostText = "Not active";
 
-        console.log("Aircraft IDs:", ids);
+        const timer = document.querySelector("[id*='timer']");
 
-        if (ids.length === 0) {
-            console.log("No aircraft found");
-            await sendTelegram("⚠️ TEST: No aircraft found");
-            await browser.close();
-            return;
+        if (timer) {
+            boostActive = true;
+            boostText = timer.innerText.trim();
         }
 
-        const idString = ids.join(",");
+        return {
+            airlineRep,
+            cargoRep,
+            boostActive,
+            boostText
+        };
+    });
 
-        // =====================
-        // STEP 3: DEPART ALL
-        // =====================
-        console.log("Sending depart request...");
+    // ===== TELEGRAM REPORT =====
+    let msg = `📊 AM4 STATUS\n\n`;
+    msg += `✈️ Airline Reputation: ${data.airlineRep}%\n`;
+    msg += `📦 Cargo Reputation: ${data.cargoRep}%\n\n`;
 
-        const responseText = await page.evaluate(async (idString) => {
-
-            const res = await fetch(
-                `https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=${idString}&fbSig=false`,
-                {
-                    method: "GET",
-                    credentials: "include"
-                }
-            );
-
-            return await res.text();
-
-        }, idString);
-
-        console.log("Response length:", responseText.length);
-
-        // =====================
-        // RESULT CHECK
-        // =====================
-        if (responseText.includes("playSound('depart')")) {
-            console.log("✅ Depart SUCCESS");
-            await sendTelegram(`✈️ TEST SUCCESS: Depart triggered for ${ids.length} aircraft`);
-        } else {
-            console.log("❌ Depart FAILED");
-            await sendTelegram("❌ TEST FAILED: Depart not triggered");
-        }
-
-    } catch (err) {
-        console.log("ERROR:", err);
-        await sendTelegram("❌ TEST ERROR: " + err.message);
+    if (data.boostActive) {
+        msg += `🚀 Boost Active\n⏱ ${data.boostText}\n`;
+    } else {
+        msg += `⚠️ No Boost Active\n`;
     }
+
+    // ===== OPTIMIZATION LOGIC =====
+    let advice = "";
+
+    if (!data.boostActive) {
+        advice += "👉 Activate cargo boost NOW\n";
+    }
+
+    if (parseInt(data.cargoRep) < 60) {
+        advice += "👉 Run cargo campaigns (type=2)\n";
+    }
+
+    if (parseInt(data.airlineRep) < 60) {
+        advice += "👉 Run airline campaigns (type=1)\n";
+    }
+
+    if (data.boostActive && parseInt(data.cargoRep) > 70) {
+        advice += "🔥 BEST TIME: Run cargo-heavy routes\n";
+    }
+
+    if (advice) {
+        msg += `\n📊 Optimization:\n${advice}`;
+    }
+
+    await sendTelegram(msg);
 
     await browser.close();
 
