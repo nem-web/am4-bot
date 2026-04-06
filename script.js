@@ -8,8 +8,9 @@ const CHAT_ID = process.env.CHAT_ID;
 
 // ===== SETTINGS =====
 const fuelThreshold = 450;
-const co2Threshold = 115;
-const maxAmount = 200000;
+const co2Threshold = 125;
+const maxAmount = 2000;
+// const maxAmount = 200000;
 
 const BOOST_INTERVAL = 60 * 60 * 1000;
 
