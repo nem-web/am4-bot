@@ -145,7 +145,7 @@ Your credentials must be stored as **encrypted GitHub Secrets** so they are neve
 
 1. Go to the **Actions** tab in your forked repository.
 2. If prompted, click **"I understand my workflows, go ahead and enable them"**.
-3. The bot will now run automatically every 15 minutes.
+3. The bot will now run automatically every 10 minutes.
 4. You can also trigger it manually by clicking **Run workflow** in the Actions tab.
 
 ---
@@ -177,7 +177,7 @@ The bot runs on a **cron schedule** defined in [`.github/workflows/bot.yml`](.gi
 
 ```yaml
 schedule:
-  - cron: "*/15 * * * *"   # Every 15 minutes
+  - cron: "*/10 * * * *"   # Every 10 minutes
 ```
 
 You can change this to any valid cron expression. For example:
