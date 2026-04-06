@@ -10,7 +10,8 @@ const CHAT_ID = process.env.CHAT_ID;
 const fuelThreshold = 450;
 const co2Threshold = 115;
 const maxAmount = 200000;
-const REPORT_INTERVAL = 60 * 60 * 1000; // 1 hour
+
+const BOOST_INTERVAL = 60 * 60 * 1000; // 1 hour
 
 const FILE = "memory.json";
 
@@ -19,7 +20,10 @@ async function sendTelegram(msg) {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: CHAT_ID, text: msg })
+        body: JSON.stringify({
+            chat_id: CHAT_ID,
+            text: msg
+        })
     });
 }
 
@@ -33,7 +37,7 @@ function save(data) {
     fs.writeFileSync(FILE, JSON.stringify(data));
 }
 
-// ===== TIME FORMAT =====
+// ===== FORMAT TIME =====
 function formatTime(sec) {
     const h = Math.floor(sec / 3600);
     const m = Math.floor((sec % 3600) / 60);
@@ -48,6 +52,7 @@ function formatTime(sec) {
     });
 
     const page = await browser.newPage();
+
     const memory = load();
     const now = Date.now();
 
@@ -67,15 +72,14 @@ function formatTime(sec) {
         });
 
         if (ids.length > 0) {
-            const idString = ids.join(",");
 
-            const res = await page.evaluate(async (idString) => {
+            const res = await page.evaluate(async (ids) => {
                 const r = await fetch(
-                    `https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=${idString}&fbSig=false`,
+                    `https://airlinemanager.com/route_depart.php?mode=all&ref=list&hasCostIndex=0&costIndex=200&ids=${ids.join(",")}&fbSig=false`,
                     { credentials: "include" }
                 );
                 return await r.text();
-            }, idString);
+            }, ids);
 
             if (res.includes("playSound('depart')")) {
                 await sendTelegram("✈️ Depart completed");
@@ -83,7 +87,7 @@ function formatTime(sec) {
         }
 
         // =====================
-        // 💰 BANK (for profit)
+        // 💰 BANK (PROFIT)
         // =====================
         await page.goto("https://airlinemanager.com/banking.php");
 
@@ -97,7 +101,10 @@ function formatTime(sec) {
         if (memory.cash && memory.time) {
             const diffCash = cash - memory.cash;
             const diffTime = (now - memory.time) / 3600000;
-            if (diffTime > 0) profitPerHour = Math.floor(diffCash / diffTime);
+
+            if (diffTime > 0) {
+                profitPerHour = Math.floor(diffCash / diffTime);
+            }
         }
 
         // =====================
@@ -110,17 +117,21 @@ function formatTime(sec) {
             return m ? parseInt(m.pop().replace(/[$,]/g, "")) : null;
         });
 
-        if (fuelPrice && fuelPrice <= fuelThreshold) {
-            await page.goto(`https://airlinemanager.com/fuel.php?mode=do&amount=${maxAmount}`);
+        if (fuelPrice !== null) {
 
-            const total = (fuelPrice * maxAmount) / 1000;
+            if (fuelPrice <= fuelThreshold) {
 
-            await sendTelegram(
+                await page.goto(`https://airlinemanager.com/fuel.php?mode=do&amount=${maxAmount}`);
+
+                const total = (fuelPrice * maxAmount) / 1000;
+
+                await sendTelegram(
 `⛽ FUEL BOUGHT
 Price: $${fuelPrice}/1000
 Amount: ${maxAmount}
 Total: $${total}`
-            );
+                );
+            }
         }
 
         // =====================
@@ -133,21 +144,25 @@ Total: $${total}`
             return m ? parseInt(m.pop().replace(/[$,]/g, "")) : null;
         });
 
-        if (co2Price && co2Price <= co2Threshold) {
-            await page.goto(`https://airlinemanager.com/co2.php?mode=do&amount=${maxAmount}`);
+        if (co2Price !== null) {
 
-            const total = (co2Price * maxAmount) / 1000;
+            if (co2Price <= co2Threshold) {
 
-            await sendTelegram(
+                await page.goto(`https://airlinemanager.com/co2.php?mode=do&amount=${maxAmount}`);
+
+                const total = (co2Price * maxAmount) / 1000;
+
+                await sendTelegram(
 `🌱 CO2 BOUGHT
 Price: $${co2Price}/1000
 Amount: ${maxAmount}
 Total: $${total}`
-            );
+                );
+            }
         }
 
         // =====================
-        // 📊 MARKETING (BOOST FIX)
+        // 📊 MARKETING (BOOST FIXED)
         // =====================
         await page.goto("https://airlinemanager.com/marketing.php");
 
@@ -167,6 +182,7 @@ Total: $${total}`
                 const match = s.match(/timer\('(.+?)',(\d+)\)/);
 
                 if (match) {
+
                     const id = match[1];
                     const seconds = parseInt(match[2]);
 
@@ -181,23 +197,23 @@ Total: $${total}`
                         boosts.push({ type: "Cargo", seconds });
                     }
                 }
-
             });
 
             return { airlineRep, cargoRep, boosts };
         });
 
         // =====================
-        // 📊 REPORT CONTROL
+        // 📊 BOOST REPORT ONLY (CONTROLLED)
         // =====================
-        const shouldSend =
+        const shouldSendBoost =
             !marketing.boosts.length ||
-            !memory.lastReport ||
-            (now - memory.lastReport > REPORT_INTERVAL);
+            !memory.lastBoostReport ||
+            (now - memory.lastBoostReport > BOOST_INTERVAL);
 
-        if (shouldSend) {
+        if (shouldSendBoost) {
 
-            let msg = `📊 AM4 ADVANCED REPORT\n\n`;
+            let msg = `📊 AM4 BOOST REPORT\n\n`;
+
             msg += `✈️ Airline Rep: ${marketing.airlineRep}%\n`;
             msg += `📦 Cargo Rep: ${marketing.cargoRep}%\n\n`;
 
@@ -237,11 +253,17 @@ Total: $${total}`
 
             await sendTelegram(msg);
 
-            memory.lastReport = now;
+            memory.lastBoostReport = now;
         }
 
-        // SAVE MEMORY
-        save({ cash, time: now, lastReport: memory.lastReport });
+        // =====================
+        // 💾 SAVE MEMORY
+        // =====================
+        save({
+            cash,
+            time: now,
+            lastBoostReport: memory.lastBoostReport
+        });
 
     } catch (err) {
         console.log(err);
