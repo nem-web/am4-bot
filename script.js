@@ -130,7 +130,7 @@ Total: $${total}`
             if (diffTime > 0) profitPerHour = Math.floor(diffCash / diffTime);
         }
 
-        if (cash > 5000000) {
+        if (cash > 6500000) {
             await sendTelegram(`💰 Cash Alert: $${cash.toLocaleString()}`);
         }
 
