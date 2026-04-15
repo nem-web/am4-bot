@@ -2,7 +2,7 @@ name: AM4 Bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 env:
