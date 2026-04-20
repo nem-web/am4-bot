@@ -100,9 +100,6 @@ function formatTime(sec) {
 
         msg += `🛫 ${departStatus}\n\n`;
 
-        msg += `📊 Airline Rep: ${marketing.airlineRep}%\n`;
-        msg += `📦 Cargo Rep: ${marketing.cargoRep}%\n\n`;
-
         if (marketing.boosts.length > 0) {
             marketing.boosts.forEach(b => {
                 msg += `🚀 ${b.type} Boost (${formatTime(b.seconds)})\n`;
