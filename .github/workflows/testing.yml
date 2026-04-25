@@ -2,7 +2,7 @@ name: AM4 - Plane Depart
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 30 min
+    - cron: "*/30 * * * *"   # every 30 min
   workflow_dispatch:
 
 jobs:
