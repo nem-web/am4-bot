@@ -233,7 +233,7 @@ am4-bot/
 
 ## License
 
-Copyright © 2024 nem-web
+Copyright © 2026 nem-web
 
 This project is licensed under the **MIT License**.
 
