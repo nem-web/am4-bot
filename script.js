@@ -48,6 +48,40 @@ async function getCash(page) {
     });
 }
 
+// get Available capacity
+async function getAvailableCapacity(page) {
+
+    return await page.evaluate(() => {
+
+        const text = document.body.innerText.replace(/\s+/g, " ");
+
+        // Example:
+        // Storage 1,250,000 / 2,000,000
+
+        let match = text.match(/([\d,]+)\s*\/\s*([\d,]+)/);
+
+        if (match) {
+
+            const current = parseInt(match[1].replace(/,/g, ""));
+            const capacity = parseInt(match[2].replace(/,/g, ""));
+
+            return Math.max(0, capacity - current);
+        }
+
+        // Alternative format:
+        // Available: 750,000
+
+        match = text.match(/Available[: ]+([\d,]+)/i);
+
+        if (match) {
+            return parseInt(match[1].replace(/,/g, ""));
+        }
+
+        return 0;
+    });
+
+}
+
 // ===== BUY FUNCTION (RELIABLE) =====
 async function buy(page, type, price, amount) {
 
@@ -130,7 +164,7 @@ Total: $${total}`
             if (diffTime > 0) profitPerHour = Math.floor(diffCash / diffTime);
         }
 
-        if (cash > 7000000) {
+        if (cash > 10000000) {
             await sendTelegram(`💰 Cash Alert: $${cash.toLocaleString()}`);
         }
 
@@ -153,11 +187,23 @@ Total: $${total}`
 
             if (fuelPrice <= fuelThreshold) {
 
-                let success = await buy(page, "fuel", fuelPrice, maxAmount);
+                const availableFuel = await getAvailableCapacity(page);
 
-                if (!success) {
-                    await sendTelegram("⚠️ Fuel retry...");
-                    await buy(page, "fuel", fuelPrice, maxAmount);
+                if (availableFuel > 0) {
+                
+                    const amount = Math.min(availableFuel, maxAmount);
+                
+                    let success = await buy(page, "fuel", fuelPrice, amount);
+                
+                    if (!success) {
+                        await sendTelegram("⚠️ Fuel retry...");
+                        await buy(page, "fuel", fuelPrice, amount);
+                    }
+                
+                } else {
+                
+                    await sendTelegram("⛽ Fuel storage already full.");
+                
                 }
             }
         }
@@ -166,28 +212,65 @@ Total: $${total}`
         // 🌱 CO2
         // =====================
         await page.goto("https://airlinemanager.com/co2.php");
-
-        const co2Price = await page.evaluate(() => {
-            const m = document.body.innerText.match(/\$\s?([\d,]+)/g);
-            return m ? parseInt(m.pop().replace(/[$,]/g, "")) : null;
+        
+        const co2Data = await page.evaluate(() => {
+        
+            const text = document.body.innerText.replace(/\s+/g, " ");
+        
+            // Get CO2 price
+            const prices = text.match(/\$\s?([\d,]+)/g);
+            const price = prices
+                ? parseInt(prices.pop().replace(/[$,]/g, ""))
+                : null;
+        
+            // Get storage information (e.g. "1,250,000 / 2,000,000")
+            let available = 0;
+        
+            const storageMatch = text.match(/([\d,]+)\s*\/\s*([\d,]+)/);
+        
+            if (storageMatch) {
+                const current = parseInt(storageMatch[1].replace(/,/g, ""));
+                const capacity = parseInt(storageMatch[2].replace(/,/g, ""));
+                available = Math.max(0, capacity - current);
+            }
+        
+            return {
+                price,
+                available
+            };
+        
         });
-
+        
+        const co2Price = co2Data.price;
+        
         if (co2Price !== null) {
-
+        
             if (memory.lastCO2 !== co2Price) {
                 await sendTelegram(`🌱 CO2 Price: $${co2Price}/1000`);
                 memory.lastCO2 = co2Price;
             }
-
+        
             if (co2Price <= co2Threshold) {
-
-                let success = await buy(page, "co2", co2Price, maxAmount);
-
-                if (!success) {
-                    await sendTelegram("⚠️ CO2 retry...");
-                    await buy(page, "co2", co2Price, maxAmount);
+        
+                if (co2Data.available > 0) {
+        
+                    const amount = Math.min(co2Data.available, maxAmount);
+        
+                    let success = await buy(page, "co2", co2Price, amount);
+        
+                    if (!success) {
+                        await sendTelegram("⚠️ CO2 retry...");
+                        await buy(page, "co2", co2Price, amount);
+                    }
+        
+                } else {
+        
+                    await sendTelegram("🌱 CO2 storage is already full.");
+        
                 }
+        
             }
+        
         }
 
         // =====================
