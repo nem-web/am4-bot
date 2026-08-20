@@ -1,355 +1,585 @@
 import puppeteer from "puppeteer";
-import fs from "fs";
 
-// ===== CONFIG =====
 const LOGIN_URL = process.env.LOGIN_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-// ===== SETTINGS =====
 const fuelThreshold = 450;
-const co2Threshold = 115;
-const maxAmount = 2000000;
+const co2Threshold = 150;
 
-const BOOST_INTERVAL = 60 * 60 * 1000;
-const FILE = "memory.json";
+const PURCHASE_RETRY_DELAY = 3000;
 
-// ===== TELEGRAM =====
-async function sendTelegram(msg) {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: CHAT_ID, text: msg })
-    });
+async function sendTelegram(message) {
+    if (!TELEGRAM_TOKEN || !CHAT_ID) {
+        console.log(message);
+        return;
+    }
+
+    try {
+        await fetch(
+            `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    chat_id: CHAT_ID,
+                    text: message
+                })
+            }
+        );
+    } catch (err) {
+        console.log("Telegram error:", err.message);
+    }
 }
 
-// ===== MEMORY =====
-function load() {
-    if (!fs.existsSync(FILE)) return {};
-    return JSON.parse(fs.readFileSync(FILE));
-}
-
-function save(data) {
-    fs.writeFileSync(FILE, JSON.stringify(data));
-}
-
-function formatTime(sec) {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    return `${h}h ${m}m`;
-}
-
-// ===== FETCH CASH =====
 async function getCash(page) {
-    await page.goto("https://airlinemanager.com/banking.php");
+    await page.goto(
+        "https://airlinemanager.com/banking.php",
+        { waitUntil: "networkidle2" }
+    );
+
     return await page.evaluate(() => {
-        const m = document.body.innerText.match(/\$\s?([\d,]+)/);
-        return m ? parseInt(m[1].replace(/,/g, "")) : 0;
+        const matches = document.body.innerText.match(/\$\s?([\d,]+)/g);
+
+        if (!matches || !matches.length) {
+            return 0;
+        }
+
+        const values = matches.map(v =>
+            parseInt(v.replace(/[$,\s]/g, ""), 10)
+        );
+
+        return Math.max(...values);
     });
 }
 
-// get Available capacity
 async function getAvailableCapacity(page) {
-
     return await page.evaluate(() => {
-
         const text = document.body.innerText.replace(/\s+/g, " ");
 
-        // Example:
-        // Storage 1,250,000 / 2,000,000
-
-        let match = text.match(/([\d,]+)\s*\/\s*([\d,]+)/);
+        let match = text.match(
+            /([\d,]+)\s*\/\s*([\d,]+)/
+        );
 
         if (match) {
+            const current = parseInt(
+                match[1].replace(/,/g, ""),
+                10
+            );
 
-            const current = parseInt(match[1].replace(/,/g, ""));
-            const capacity = parseInt(match[2].replace(/,/g, ""));
+            const capacity = parseInt(
+                match[2].replace(/,/g, ""),
+                10
+            );
 
             return Math.max(0, capacity - current);
         }
 
-        // Alternative format:
-        // Available: 750,000
-
-        match = text.match(/Available[: ]+([\d,]+)/i);
+        match = text.match(
+            /Available[:\s]+([\d,]+)/i
+        );
 
         if (match) {
-            return parseInt(match[1].replace(/,/g, ""));
+            return parseInt(
+                match[1].replace(/,/g, ""),
+                10
+            );
+        }
+
+        match = text.match(
+            /Remaining[:\s]+([\d,]+)/i
+        );
+
+        if (match) {
+            return parseInt(
+                match[1].replace(/,/g, ""),
+                10
+            );
         }
 
         return 0;
     });
-
 }
 
-// ===== BUY FUNCTION (RELIABLE) =====
-async function buy(page, type, price, amount) {
+async function getFuelData(page) {
+    await page.goto(
+        "https://airlinemanager.com/fuel.php",
+        { waitUntil: "networkidle2" }
+    );
 
-    const before = await getCash(page);
+    return await page.evaluate(() => {
+        const text = document.body.innerText.replace(/\s+/g, " ");
 
-    await page.evaluate(async (type, amount) => {
-        await fetch(`https://airlinemanager.com/${type}.php?mode=do&amount=${amount}`, {
-            credentials: "include"
-        });
-    }, type, amount);
+        const prices = text.match(/\$\s?([\d,]+)/g);
 
-    await new Promise(r => setTimeout(r, 3000));
+        let price = null;
 
-    const after = await getCash(page);
+        if (prices && prices.length) {
+            price = parseInt(
+                prices[prices.length - 1]
+                    .replace(/[$,\s]/g, ""),
+                10
+            );
+        }
 
-    if (after < before) {
-        const total = (price * amount) / 1000;
+        let available = 0;
+
+        let match = text.match(
+            /([\d,]+)\s*\/\s*([\d,]+)/
+        );
+
+        if (match) {
+            const current = parseInt(
+                match[1].replace(/,/g, ""),
+                10
+            );
+
+            const capacity = parseInt(
+                match[2].replace(/,/g, ""),
+                10
+            );
+
+            available = Math.max(
+                0,
+                capacity - current
+            );
+        }
+
+        if (available === 0) {
+            match = text.match(
+                /Available[:\s]+([\d,]+)/i
+            );
+
+            if (match) {
+                available = parseInt(
+                    match[1].replace(/,/g, ""),
+                    10
+                );
+            }
+        }
+
+        if (available === 0) {
+            match = text.match(
+                /Remaining[:\s]+([\d,]+)/i
+            );
+
+            if (match) {
+                available = parseInt(
+                    match[1].replace(/,/g, ""),
+                    10
+                );
+            }
+        }
+
+        return {
+            price,
+            available
+        };
+    });
+}
+
+async function getCO2Data(page) {
+    await page.goto(
+        "https://airlinemanager.com/co2.php",
+        { waitUntil: "networkidle2" }
+    );
+
+    return await page.evaluate(() => {
+        let price = null;
+
+        const elements = [
+            ...document.querySelectorAll("span, b, div")
+        ];
+
+        for (const element of elements) {
+            const text = element.innerText
+                ?.trim()
+                .replace(/\s+/g, " ");
+
+            if (!text) continue;
+
+            const match = text.match(
+                /^\$\s?([\d,]+(?:\.\d+)?)$/
+            );
+
+            if (match) {
+                price = parseFloat(
+                    match[1].replace(/,/g, "")
+                );
+                break;
+            }
+        }
+
+        if (price === null) {
+            const text = document.body.innerText
+                .replace(/\s+/g, " ");
+
+            const prices = text.match(
+                /\$\s?([\d,]+(?:\.\d+)?)/g
+            );
+
+            if (prices && prices.length) {
+                price = parseFloat(
+                    prices[0]
+                        .replace(/[$,\s]/g, "")
+                );
+            }
+        }
+
+        const capacityElement =
+            document.querySelector("#remCapacity");
+
+        let available = 0;
+
+        if (capacityElement) {
+            available = parseInt(
+                capacityElement.innerText
+                    .replace(/,/g, "")
+                    .trim(),
+                10
+            );
+        }
+
+        if (!Number.isFinite(available)) {
+            available = 0;
+        }
+
+        return {
+            price,
+            available
+        };
+    });
+}
+
+async function buy(
+    page,
+    type,
+    price,
+    amount
+) {
+    const beforeCash = await getCash(page);
+
+    const total = (price * amount) / 1000;
+
+    console.log(
+        `Buying ${amount.toLocaleString()} ${type} at $${price}/1000`
+    );
+
+    try {
+        const response = await page.evaluate(
+            async (type, amount) => {
+                const r = await fetch(
+                    `https://airlinemanager.com/${type}.php?mode=do&amount=${amount}`,
+                    {
+                        credentials: "include"
+                    }
+                );
+
+                return {
+                    ok: r.ok,
+                    status: r.status,
+                    text: await r.text()
+                };
+            },
+            type,
+            amount
+        );
+
+        console.log(
+            `${type} purchase response:`,
+            response.status
+        );
+
+    } catch (err) {
+        console.log(
+            `${type} purchase request error:`,
+            err.message
+        );
 
         await sendTelegram(
-`✅ ${type.toUpperCase()} BOUGHT
-Price: $${price}/1000
-Amount: ${amount}
-Total: $${total}`
+            `❌ ${type.toUpperCase()} purchase request failed\n` +
+            `${err.message}`
         );
+
+        return false;
+    }
+
+    await new Promise(
+        resolve =>
+            setTimeout(
+                resolve,
+                PURCHASE_RETRY_DELAY
+            )
+    );
+
+    const afterCash = await getCash(page);
+
+    if (afterCash < beforeCash) {
+        await sendTelegram(
+            `✅ ${type.toUpperCase()} BOUGHT\n` +
+            `Price: $${price}/1000\n` +
+            `Amount: ${amount.toLocaleString()}\n` +
+            `Total: $${total.toLocaleString()}\n` +
+            `Cash: $${afterCash.toLocaleString()}`
+        );
+
         return true;
     }
+
+    await sendTelegram(
+        `❌ ${type.toUpperCase()} purchase failed\n` +
+        `Price: $${price}/1000\n` +
+        `Amount: ${amount.toLocaleString()}\n` +
+        `Total: $${total.toLocaleString()}`
+    );
 
     return false;
 }
 
-(async () => {
+async function processFuel(page) {
+    console.log("Checking fuel...");
 
+    const data = await getFuelData(page);
+
+    if (data.price === null) {
+        await sendTelegram(
+            "❌ Could not read fuel price."
+        );
+        return;
+    }
+
+    console.log(
+        `Fuel: $${data.price}/1000 | Available: ${data.available.toLocaleString()}`
+    );
+
+    if (data.price > fuelThreshold) {
+        console.log(
+            `Fuel price $${data.price} is above threshold $${fuelThreshold}`
+        );
+        return;
+    }
+
+    if (data.available <= 0) {
+        await sendTelegram(
+            "⛽ Fuel storage is full."
+        );
+        return;
+    }
+
+    const amount = data.available;
+
+    await sendTelegram(
+        `🟢 FUEL BUYING\n` +
+        `Price: $${data.price}/1000\n` +
+        `Amount: ${amount.toLocaleString()}\n` +
+        `Total: $${((data.price * amount) / 1000).toLocaleString()}`
+    );
+
+    let success = await buy(
+        page,
+        "fuel",
+        data.price,
+        amount
+    );
+
+    if (!success) {
+        await sendTelegram(
+            "🔄 Retrying fuel purchase..."
+        );
+
+        await new Promise(
+            resolve =>
+                setTimeout(
+                    resolve,
+                    PURCHASE_RETRY_DELAY
+                )
+        );
+
+        const retryData = await getFuelData(page);
+
+        if (
+            retryData.price !== null &&
+            retryData.price <= fuelThreshold &&
+            retryData.available > 0
+        ) {
+            await buy(
+                page,
+                "fuel",
+                retryData.price,
+                retryData.available
+            );
+        }
+    }
+}
+
+async function processCO2(page) {
+    console.log("Checking CO2...");
+
+    const data = await getCO2Data(page);
+
+    if (data.price === null) {
+        await sendTelegram(
+            "❌ Could not read CO2 price."
+        );
+        return;
+    }
+
+    console.log(
+        `CO2: $${data.price}/1000 | Available: ${data.available.toLocaleString()}`
+    );
+
+    if (data.price > co2Threshold) {
+        console.log(
+            `CO2 price $${data.price} is above threshold $${co2Threshold}`
+        );
+        return;
+    }
+
+    if (data.available <= 0) {
+        await sendTelegram(
+            "🌱 CO2 storage is full."
+        );
+        return;
+    }
+
+    const amount = data.available;
+
+    await sendTelegram(
+        `🟢 CO2 BUYING\n` +
+        `Price: $${data.price}/1000\n` +
+        `Amount: ${amount.toLocaleString()}\n` +
+        `Total: $${((data.price * amount) / 1000).toLocaleString()}`
+    );
+
+    let success = await buy(
+        page,
+        "co2",
+        data.price,
+        amount
+    );
+
+    if (!success) {
+        await sendTelegram(
+            "🔄 Retrying CO2 purchase..."
+        );
+
+        await new Promise(
+            resolve =>
+                setTimeout(
+                    resolve,
+                    PURCHASE_RETRY_DELAY
+                )
+        );
+
+        const retryData = await getCO2Data(page);
+
+        if (
+            retryData.price !== null &&
+            retryData.price <= co2Threshold &&
+            retryData.available > 0
+        ) {
+            await buy(
+                page,
+                "co2",
+                retryData.price,
+                retryData.available
+            );
+        }
+    }
+}
+
+(async () => {
     const browser = await puppeteer.launch({
         headless: "new",
-        args: ["--no-sandbox"]
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox"
+        ]
     });
 
     const page = await browser.newPage();
-    const memory = load();
-    const now = Date.now();
 
     try {
+        await page.goto(
+            LOGIN_URL,
+            {
+                waitUntil: "networkidle2"
+            }
+        );
 
-        await page.goto(LOGIN_URL, { waitUntil: "networkidle2" });
-
-        // =====================
-        // ✈️ DEPART
-        // =====================
-        await page.goto("https://airlinemanager.com/routes_main.php");
+        // Depart
+        await page.goto(
+            "https://airlinemanager.com/routes_main.php",
+            {
+                waitUntil: "networkidle2"
+            }
+        );
 
         const ids = await page.evaluate(() =>
-            [...document.querySelectorAll("[id^=routeMainList]")]
-                .map(el => el.id.match(/\d+/)?.[0])
+            [
+                ...document.querySelectorAll(
+                    "[id^=routeMainList]"
+                )
+            ]
+                .map(
+                    el =>
+                        el.id
+                            .match(/\d+/)?.[0]
+                )
                 .filter(Boolean)
         );
 
         if (ids.length > 0) {
-            const res = await page.evaluate(async (ids) => {
-                const r = await fetch(
-                    `https://airlinemanager.com/route_depart.php?mode=all&ids=${ids.join(",")}`,
-                    { credentials: "include" }
-                );
-                return await r.text();
-            }, ids);
+            const result = await page.evaluate(
+                async ids => {
+                    const r = await fetch(
+                        `https://airlinemanager.com/route_depart.php?mode=all&ids=${ids.join(",")}`,
+                        {
+                            credentials: "include"
+                        }
+                    );
 
-            if (res.includes("playSound('depart')")) {
-                await sendTelegram("✈️ Depart completed");
+                    return await r.text();
+                },
+                ids
+            );
+
+            if (
+                result.includes(
+                    "playSound('depart')"
+                )
+            ) {
+                await sendTelegram(
+                    "✈️ Depart completed"
+                );
             }
         }
 
-        // =====================
-        // 💰 CASH + PROFIT
-        // =====================
+        // Cash alert
         const cash = await getCash(page);
 
-        let profitPerHour = 0;
-        if (memory.cash && memory.time) {
-            const diffCash = cash - memory.cash;
-            const diffTime = (now - memory.time) / 3600000;
-            if (diffTime > 0) profitPerHour = Math.floor(diffCash / diffTime);
-        }
-
         if (cash > 10000000) {
-            await sendTelegram(`💰 Cash Alert: $${cash.toLocaleString()}`);
+            await sendTelegram(
+                `💰 Cash: $${cash.toLocaleString()}`
+            );
         }
 
-        // =====================
-        // ⛽ FUEL
-        // =====================
-        await page.goto("https://airlinemanager.com/fuel.php");
+        // Fuel
+        await processFuel(page);
 
-        const fuelPrice = await page.evaluate(() => {
-            const m = document.body.innerText.match(/\$\s?([\d,]+)/g);
-            return m ? parseInt(m.pop().replace(/[$,]/g, "")) : null;
-        });
-
-        if (fuelPrice !== null) {
-
-            if (memory.lastFuel !== fuelPrice) {
-                await sendTelegram(`⛽ Fuel Price: $${fuelPrice}/1000`);
-                memory.lastFuel = fuelPrice;
-            }
-
-            if (fuelPrice <= fuelThreshold) {
-
-                const availableFuel = await getAvailableCapacity(page);
-
-                if (availableFuel > 0) {
-                
-                    const amount = Math.min(availableFuel, maxAmount);
-                
-                    let success = await buy(page, "fuel", fuelPrice, amount);
-                
-                    if (!success) {
-                        await sendTelegram("⚠️ Fuel retry...");
-                        await buy(page, "fuel", fuelPrice, amount);
-                    }
-                
-                } else {
-                
-                    await sendTelegram("⛽ Fuel storage already full.");
-                
-                }
-            }
-        }
-
-        // =====================
-        // 🌱 CO2
-        // =====================
-        await page.goto("https://airlinemanager.com/co2.php");
-        
-        const co2Data = await page.evaluate(() => {
-        
-            const text = document.body.innerText.replace(/\s+/g, " ");
-        
-            // Get CO2 price
-            const prices = text.match(/\$\s?([\d,]+)/g);
-            const price = prices
-                ? parseInt(prices.pop().replace(/[$,]/g, ""))
-                : null;
-        
-            // Get storage information (e.g. "1,250,000 / 2,000,000")
-            let available = 0;
-        
-            const storageMatch = text.match(/([\d,]+)\s*\/\s*([\d,]+)/);
-        
-            if (storageMatch) {
-                const current = parseInt(storageMatch[1].replace(/,/g, ""));
-                const capacity = parseInt(storageMatch[2].replace(/,/g, ""));
-                available = Math.max(0, capacity - current);
-            }
-        
-            return {
-                price,
-                available
-            };
-        
-        });
-        
-        const co2Price = co2Data.price;
-        
-        if (co2Price !== null) {
-        
-            if (memory.lastCO2 !== co2Price) {
-                await sendTelegram(`🌱 CO2 Price: $${co2Price}/1000`);
-                memory.lastCO2 = co2Price;
-            }
-        
-            if (co2Price <= co2Threshold) {
-        
-                if (co2Data.available > 0) {
-        
-                    const amount = Math.min(co2Data.available, maxAmount);
-        
-                    let success = await buy(page, "co2", co2Price, amount);
-        
-                    if (!success) {
-                        await sendTelegram("⚠️ CO2 retry...");
-                        await buy(page, "co2", co2Price, amount);
-                    }
-        
-                } else {
-        
-                    await sendTelegram("🌱 CO2 storage is already full.");
-        
-                }
-        
-            }
-        
-        }
-
-        // =====================
-        // 📊 BOOST
-        // =====================
-        await page.goto("https://airlinemanager.com/marketing.php");
-
-        const marketing = await page.evaluate(() => {
-
-            const stars = document.querySelectorAll(".stars");
-
-            const airlineRep = parseInt(stars[0]?.innerText || 0);
-            const cargoRep = parseInt(stars[1]?.innerText || 0);
-
-            const scripts = [...document.querySelectorAll("script")].map(s => s.innerText);
-
-            let boosts = [];
-
-            scripts.forEach(s => {
-                const match = s.match(/timer\('(.+?)',(\d+)\)/);
-
-                if (match) {
-                    const id = match[1];
-                    const seconds = parseInt(match[2]);
-
-                    const row = document.querySelector(`#${id}`)?.closest("tr");
-                    const text = row?.innerText.toLowerCase() || "";
-
-                    if (text.includes("airline")) boosts.push({ type: "Airline", seconds });
-                    if (text.includes("cargo")) boosts.push({ type: "Cargo", seconds });
-                }
-            });
-
-            return { airlineRep, cargoRep, boosts };
-        });
-
-        const shouldSendBoost =
-            !marketing.boosts.length ||
-            !memory.lastBoostReport ||
-            (now - memory.lastBoostReport > BOOST_INTERVAL);
-
-        if (shouldSendBoost) {
-
-            let msg = `📊 AM4 BOOST REPORT\n\n`;
-
-            msg += `✈️ Airline Rep: ${marketing.airlineRep}%\n`;
-            msg += `📦 Cargo Rep: ${marketing.cargoRep}%\n\n`;
-
-            if (marketing.boosts.length > 0) {
-                marketing.boosts.forEach(b => {
-                    msg += `🚀 ${b.type} Boost (${formatTime(b.seconds)})\n`;
-                });
-            } else {
-                msg += `⚠️ No Boost Active\n`;
-            }
-
-            if (profitPerHour > 0) {
-                msg += `\n💰 Profit/hr: $${profitPerHour.toLocaleString()}\n`;
-            }
-
-            await sendTelegram(msg);
-
-            memory.lastBoostReport = now;
-        }
-
-        // =====================
-        // SAVE
-        // =====================
-        save({
-            ...memory,
-            cash,
-            time: now
-        });
+        // CO2
+        await processCO2(page);
 
     } catch (err) {
         console.log(err);
-        await sendTelegram("❌ ERROR: " + err.message);
+
+        await sendTelegram(
+            `❌ BOT ERROR\n${err.message}`
+        );
+
+    } finally {
+        await browser.close();
     }
-
-    await browser.close();
-
 })();
